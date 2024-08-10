@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zweefmolen</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        input, button {
+            margin: 10px 0;
+        }
+        #progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #f3f3f3;
+            border: 1px solid #ccc;
+            margin-top: 10px;
+            position: relative;
+        }
+        #progress {
+            height: 100%;
+            background: #4caf50;
+            width: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Zweefmolen</h1>
+        <input type="file" id="audio-file" accept="audio/mp3">
+        <br>
+        <label for="pitch">Pitch Hoeveelheid (semitonen):</label>
+        <input type="number" id="pitch" value="0.5" step="0.1">
+        <br>
+        <label for="phase">Fase (seconden):</label>
+        <input type="number" id="phase" value="12" step="0.1">
+        <br>
+        <button id="vervorm">Vervorm</button>
+        <br>
+        <audio id="audio" controls></audio>
+        <div id="progress-bar">
+            <div id="progress"></div>
+        </div>
+    </div>
+
+    <script>
+        const audioFileInput = document.getElementById('audio-file');
+        const pitchInput = document.getElementById('pitch');
+        const phaseInput = document.getElementById('phase');
+        const vervormButton = document.getElementById('vervorm');
+        const audioElement = document.getElementById('audio');
+        const progressBar = document.getElementById('progress-bar');
+        const progress = document.getElementById('progress');
+
+        let audioContext;
+        let audioBuffer;
+        let originalFileURL;
+
+        audioFileInput.addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const arrayBuffer = await file.arrayBuffer();
+                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+                // Store the original file URL for later use
+                originalFileURL = URL.createObjectURL(file);
+                audioElement.src = originalFileURL;
+            } catch (error) {
+                console.error('Error loading audio file:', error);
+            }
+        });
+
+        function applyEffect(buffer) {
+            const newBuffer = audioContext.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+            const channels = buffer.numberOfChannels;
+            const pitchAmount = parseFloat(pitchInput.value);
+            const phase = parseFloat(phaseInput.value);
+
+            for (let i = 0; i < channels; i++) {
+                const inputData = buffer.getChannelData(i);
+                const outputData = newBuffer.getChannelData(i);
+
+                for (let j = 0; j < inputData.length; j++) {
+                    const time = j / buffer.sampleRate;
+                    const pitchShift = Math.sin((time / phase) * 2 * Math.PI) * pitchAmount / 12;
+                    const playbackRate = Math.pow(2, pitchShift);
+                    outputData[j] = inputData[j] * playbackRate;
+                }
+            }
+
+            return newBuffer;
+        }
+
+        async function renderAndReplaceAudio() {
+            if (!audioBuffer) return;
+
+            try {
+                // Use OfflineAudioContext to render the transformed audio
+                const offlineContext = new OfflineAudioContext(
+                    audioBuffer.numberOfChannels,
+                    audioBuffer.length,
+                    audioBuffer.sampleRate
+                );
+
+                const offlineSource = offlineContext.createBufferSource();
+                offlineSource.buffer = applyEffect(audioBuffer);
+                offlineSource.connect(offlineContext.destination);
+                offlineSource.start(0);
+
+                const renderedBuffer = await offlineContext.startRendering();
+
+                const audioBlob = new Blob([audioBufferToWav(renderedBuffer)], { type: 'audio/wav' });
+                const url = URL.createObjectURL(audioBlob);
+
+                // Update the audio element with the transformed audio
+                audioElement.src = url;
+                audioElement.play();
+
+                // Update progress bar
+                const duration = renderedBuffer.duration;
+                function updateProgress() {
+                    const currentTime = audioElement.currentTime;
+                    updateProgressBar(currentTime, duration);
+                    if (currentTime < duration) {
+                        requestAnimationFrame(updateProgress);
+                    }
+                }
+                updateProgress();
+            } catch (error) {
+                console.error('Error rendering and replacing audio:', error);
+            }
+        }
+
+        vervormButton.addEventListener('click', () => {
+            if (audioBuffer) {
+                renderAndReplaceAudio();
+            } else {
+                console.warn('No audio buffer available.');
+            }
+        });
+
+        function audioBufferToWav(buffer) {
+            const numOfChannels = buffer.numberOfChannels;
+            const length = buffer.length * numOfChannels * 2;
+            const arrayBuffer = new ArrayBuffer(length);
+            const view = new DataView(arrayBuffer);
+
+            const channels = [];
+            for (let i = 0; i < numOfChannels; i++) {
+                channels.push(buffer.getChannelData(i));
+            }
+
+            let offset = 0;
+            for (let i = 0; i < buffer.length; i++) {
+                for (let j = 0; j < numOfChannels; j++) {
+                    view.setInt16(offset, channels[j][i] * 32767, true);
+                    offset += 2;
+                }
+            }
+
+            // Header information
+            const wavHeader = new Uint8Array([
+                82, 73, 70, 70, // "RIFF"
+                0, 0, 0, 0, // file size placeholder
+                87, 65, 86, 69, // "WAVE"
+                102, 109, 116, 32, // "fmt " chunk
+                16, 0, 0, 0, // chunk size (16 bytes for PCM)
+                1, 0, // audio format (1 = PCM)
+                numOfChannels, 0, // number of channels
+                64, 172, 1, 0, // sample rate (44100 Hz)
+                128, 87, 1, 0, // byte rate (44100 * 2 * 2)
+                4, 0, // block align (2 channels * 2 bytes per sample)
+                16, 0, // bits per sample (16 bits)
+                100, 97, 116, 97, // "data" chunk
+                0, 0, 0, 0 // data size placeholder
+            ]);
+
+            // Fill in size placeholders
+            const dataSize = length;
+            const fileSize = length + 44 - 8; // 44 bytes for header
+            view.setUint32(4, fileSize, true);
+            view.setUint32(40, dataSize, true);
+
+            return new Blob([wavHeader, new Uint8Array(arrayBuffer)], { type: 'audio/wav' });
+        }
+
+        function updateProgressBar(currentTime, duration) {
+            const progressWidth = (currentTime / duration) * 100;
+            progress.style.width = `${progressWidth}%`;
+        }
+    </script>
+</body>
+</html>
