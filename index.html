@@ -8,10 +8,20 @@
         body {
             font-family: Arial, sans-serif;
             margin: 20px;
+            filter: sepia(60%);
         }
         .container {
             max-width: 600px;
+            min-height: 650px;
             margin: 0 auto;
+            text-align: center;
+            background-color: #3b2a1e; /* Dark brown typical of Bakelite */
+            border-radius: 250px 250px 0 0; /* Rounded top corners */
+            padding-top: 25px;
+            background-image: url("zweefmolen-back.png");
+            background-size: cover; /* Ensure the background image covers the container */
+            background-position: center; /* Center the background image */
+            background-repeat: no-repeat; /* Prevent repeating the background image */
         }
         input, button {
             margin: 10px 0;
@@ -31,43 +41,70 @@
         }
         .info {
             margin-top: 10px;
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        #audio {
+            opacity: 0.5;
+        }
+        #vervorm {
+            border-radius: 5px;
+            width: 100%;
+            height: 150px;
+            font-size: 2.5em;
+            color: #888;
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Zweefmolen</h1>
+        <h1>--</h1>
         <input type="file" id="audio-file" accept="audio/mp3">
         <br>
-        <label for="pitch">Pitch Hoeveelheid (semitonen):</label>
-        <input type="number" id="pitch" value="0.5" step="0.1">
+        <audio id="audio" controls></audio><br>
+        
+        <div id="options">
+            <label for="phase">Fase (seconden):</label>
+            <input type="number" id="phase" value="12" step="0.1">
+            <br>
+            <label for="phase-shift">Start (fase verschuiving: 0-2PI):</label>
+            <input type="number" id="phase-shift" value="0" min="0" max="6.238" step="0.001">
+            <br>
+            <label for="pitch">Toonhoogte verschuiving (percentage):</label>
+            <input type="number" id="pitch" value="0.5" step="0.1">
+            <br>
+            <button id="vervorm">Vervorm (start bewerking)</button>
+            <button id="save">Bewerkt Bestand opslaan</button>
+        </div>
         <br>
-        <label for="phase">Fase (seconden):</label>
-        <input type="number" id="phase" value="12" step="0.1">
-        <br>
-        <button id="vervorm">Vervorm</button>
-        <br>
-        <audio id="audio" controls></audio>
         <div id="progress-bar">
             <div id="progress"></div>
         </div>
         <div class="info">
             <h3>Informatie Over Audio</h3>
-            <div id="input-info"></div>
-            <div id="output-info"></div>
+            <div id="input-info">-         -</div>
+            <div id="output-info">-         -</div>
         </div>
     </div>
+    <div id="hidden" style="display:none">pair programming: https://chatgpt.com/c/da3d951c-b08f-44b0-a229-33192120934e</div>
 
     <script>
         const audioFileInput = document.getElementById('audio-file');
         const pitchInput = document.getElementById('pitch');
         const phaseInput = document.getElementById('phase');
+        const phaseShiftInput = document.getElementById('phase-shift');
         const vervormButton = document.getElementById('vervorm');
         const audioElement = document.getElementById('audio');
         const progressBar = document.getElementById('progress-bar');
         const progress = document.getElementById('progress');
         const inputInfo = document.getElementById('input-info');
         const outputInfo = document.getElementById('output-info');
+        const options = document.getElementById('options');
+        const saveButton = document.getElementById('save');
+          let processedAudioURL = '';
+      
+        options.style.display = "none";
+        vervormButton.style.opacity = 0.1;
+        vervormButton.disabled = true;
 
         let audioContext;
         let audioBuffer;
@@ -82,14 +119,17 @@
                 const arrayBuffer = await file.arrayBuffer();
                 audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
 
-                // Store the original file URL for later use
                 originalFileURL = URL.createObjectURL(file);
                 audioElement.src = originalFileURL;
 
-                // Display input audio info
                 displayAudioInfo(audioBuffer, 'input-info');
+                vervormButton.disabled = false;
+                vervormButton.style.opacity = 1;
+                inputInfo.style.display = "none"; // Display info when processing starts, not now..
+                options.style.display = "block"; // Give the user options now..
+
             } catch (error) {
-                console.error('Error loading audio file:', error);
+                console.error('Fout bij het laden van het audiobestand:', error);
             }
         });
 
@@ -102,37 +142,88 @@
 
             infoElement.innerHTML = `
                 <p><strong>Aantal Kanalen:</strong> ${numberOfChannels}</p>
-                <p><strong>Lengte:</strong> ${length} samples</p>
+                <p><strong>Lengte (data):</strong> ${length} samples</p>
                 <p><strong>Sample Rate:</strong> ${sampleRate} Hz</p>
-                <p><strong>Duurtijd:</strong> ${duration.toFixed(2)} seconden</p>
+                <p><strong>Lengte (tijd):</strong> ${duration.toFixed(2)} seconden</p>
             `;
         }
 
-        function applyEffect(buffer) {
-            const numberOfChannels = buffer.numberOfChannels;
-            const newBuffer = audioContext.createBuffer(numberOfChannels, buffer.length, buffer.sampleRate);
-            const pitchAmount = parseFloat(pitchInput.value);
-            const phase = parseFloat(phaseInput.value);
+        function applyEffect(buffer, onProgress) {
+            options.style.display = "none";
+            inputInfo.style.display = "block";
 
-            for (let i = 0; i < numberOfChannels; i++) {
-                const inputData = buffer.getChannelData(i);
-                const outputData = newBuffer.getChannelData(i);
+            return new Promise((resolve) => {
+                const numberOfChannels = buffer.numberOfChannels;
+                const sampleRate = buffer.sampleRate;
+                const length = buffer.length;
+                const newBuffer = audioContext.createBuffer(numberOfChannels, length, sampleRate);
 
-                for (let j = 0; j < inputData.length; j++) {
-                    const time = j / buffer.sampleRate;
-                    const pitchShift = Math.sin((time / phase) * 2 * Math.PI) * pitchAmount / 12;
-                    const playbackRate = Math.pow(2, pitchShift);
+                const pitchPercentage = parseFloat(pitchInput.value); // Pitch percentage
+                const pitchAmount = (pitchPercentage / 100) ; // Convert percentage to semitones
 
-                    // Apply pitch shifting effect
-                    outputData[j] = inputData[j]; // Keep the data unchanged for testing
+                const phase = parseFloat(phaseInput.value);
+                const phaseShift = parseFloat(phaseShiftInput.value);
+
+                let chunkSize = 2048; // Number of samples to process per chunk
+                let start = 0;
+
+                function processChunk() {
+                    const end = Math.min(start + chunkSize, length);
+                    for (let i = 0; i < numberOfChannels; i++) {
+                        const inputData = buffer.getChannelData(i);
+                        const outputData = newBuffer.getChannelData(i);
+                
+                        // Apply pitch shift
+
+                        for (let j = start; j < end; j++)
+                        {
+                          
+                            result=0;
+                            for(h=-1;h<1;h+=0.5) // make sure all data is filled and that we subsample..
+                            {
+                              const time = j / sampleRate;
+                              // Calculate pitch shift effect
+                              let playHeadShift = Math.sin(((time + phaseShift) / phase) * 2 * Math.PI) * pitchAmount;
+                              
+                              let shiftedPosition = Math.round(j + playHeadShift);
+                  
+                              // Ensure shiftedPosition is within bounds
+                              if (shiftedPosition < 0) shiftedPosition = 0;
+                              if (shiftedPosition >= length -1) shiftedPosition = length - 1;
+                  
+                              result+ = inputData[shiftedPosition];
+                            
+                            }
+                            outputData[j]=result/5;
+                        }
+                    }
+
+
+                    // Update progress bar
+                    if (onProgress) {
+                        onProgress(end / length);
+                    }
+
+                    start = end;
+                    if (start < length) {
+                        // Schedule the next chunk processing
+                        requestAnimationFrame(processChunk);
+                    } else {
+                        // Processing complete
+                        resolve(newBuffer);
+                    }
                 }
-            }
 
-            return newBuffer;
+                // Start processing chunks
+                processChunk();
+            });
         }
 
         async function renderAndReplaceAudio() {
-            if (!audioBuffer) return;
+            if (!audioBuffer) {
+                console.warn('Geen audiobuffer beschikbaar.');
+                return;
+            }
 
             try {
                 // Use OfflineAudioContext to render the transformed audio
@@ -143,7 +234,10 @@
                 );
 
                 const offlineSource = offlineContext.createBufferSource();
-                offlineSource.buffer = applyEffect(audioBuffer);
+                const processedBuffer = await applyEffect(audioBuffer, (progress) => {
+                    updateProgressBar(progress * 100); // Update progress bar in percentage
+                });
+                offlineSource.buffer = processedBuffer;
                 offlineSource.connect(offlineContext.destination);
                 offlineSource.start(0);
 
@@ -159,26 +253,20 @@
                 // Display output audio info
                 displayAudioInfo(renderedBuffer, 'output-info');
 
-                // Update progress bar
-                const duration = renderedBuffer.duration;
-                function updateProgress() {
-                    const currentTime = audioElement.currentTime;
-                    updateProgressBar(currentTime, duration);
-                    if (currentTime < duration) {
-                        requestAnimationFrame(updateProgress);
-                    }
-                }
-                updateProgress();
             } catch (error) {
                 console.error('Error rendering and replacing audio:', error);
             }
+        }
+
+        function updateProgressBar(percentage) {
+            progress.style.width = `${percentage}%`;
         }
 
         vervormButton.addEventListener('click', () => {
             if (audioBuffer) {
                 renderAndReplaceAudio();
             } else {
-                console.warn('No audio buffer available.');
+                console.warn('Geen audiobuffer beschikbaar.');
             }
         });
 
@@ -196,8 +284,8 @@
             let offset = 0;
             for (let i = 0; i < buffer.length; i++) {
                 for (let j = 0; j < numOfChannels; j++) {
-                    // Convert to 16-bit PCM and ensure mono compatibility
-                    view.setInt16(offset, channels[j][i] * 32767, true);
+                    // Convert to 16-bit PCM
+                    view.setInt16(offset, Math.max(-32768, Math.min(32767, channels[j][i] * 32767)), true);
                     offset += 2;
                 }
             }
@@ -226,11 +314,6 @@
             view.setUint32(40, dataSize, true);
 
             return new Blob([wavHeader, new Uint8Array(arrayBuffer)], { type: 'audio/wav' });
-        }
-
-        function updateProgressBar(currentTime, duration) {
-            const progressWidth = (currentTime / duration) * 100;
-            progress.style.width = `${progressWidth}%`;
         }
     </script>
 </body>
